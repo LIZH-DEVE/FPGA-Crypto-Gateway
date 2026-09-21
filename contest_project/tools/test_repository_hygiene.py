@@ -28,7 +28,7 @@ def test_public_tree_has_no_legacy_machine_specific_paths() -> None:
         for path in paths:
             if path.suffix.lower() not in TEXT_SUFFIXES:
                 continue
-            if path == Path(__file__):
+            if path.resolve() == Path(__file__).resolve():
                 continue
 
             text = path.read_text(encoding="utf-8")
