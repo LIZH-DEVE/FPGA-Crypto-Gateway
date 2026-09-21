@@ -1,146 +1,143 @@
-# FPGA 开发：RX50T 实机系统与 Zynq 数据通路
+# FPGA Crypto Gateway
 
-本仓库集中整理两类互补的 **FPGA / RTL 开发实践**：
+本仓库用于集中保存 **FPGA 加密网关相关源码、testbench、构建脚本和调试工具**。
 
-1. **RX50T pure-PL 实机系统**：面向真实 Artix-7 开发板，完成 UART、protocol parser、ACL、AES / SM4、PMU / trace、watchdog、host tools 与板级验证；
-2. **Zynq heterogeneous datapath**：面向 SoC data movement，保留 AXI-Lite、AXI4、CDC、FIFO、Gearbox、PBM、DMA 与 descriptor ring 等模块。
+项目代码以 RX50T / Artix-7 上的 pure-PL 加密数据通路为主，同时保留一组 Zynq / AXI 数据搬运模块。这里的重点是源码组织与工程实现，不承担比赛项目展示页的角色。
 
-两部分分别覆盖“**真实 FPGA 板级实现**”与“**PS/PL 数据搬运与异构互联**”，避免将同类 crypto / parser 代码重复维护。
+## 代码入口
 
-## 1. RX50T pure-PL 主线
+### RX50T 主线
 
-当前主要开发线基于 **RX50T / Xilinx Artix-7 XC7A50T**。
-
-数据通路：
+`contest_project/` 是当前主要 FPGA 实现：
 
 ```text
 UART RX
   → Parser
   → Protocol Dispatcher
-  → contest_crypto_axis_core
-      ├── AXIS ACL
-      ├── 8→128 Packer
-      ├── AES / SM4 Block Engine
-      └── 128→8 Unpacker
+  → AXI-Stream ACL
+  → Block Packer
+  → AES / SM4 Engine
+  → Block Unpacker
   → UART TX
 ```
 
-### 技术内容
-
-- **UART datapath**：2M baud 板级通信与 buffering；
-- **Protocol parser**：帧解析、长度检查与 error handling；
-- **ACL**：8-slot runtime rule table、hit counter 与 block path；
-- **AXI-Stream pipeline**：backpressure-aware ACL / packer / block engine / unpacker；
-- **AES / SM4 integration**：128-bit block path，覆盖 16B / 32B / 64B / 128B；
-- **Observability**：statistics、PMU、on-chip benchmark；
-- **Fault handling**：watchdog 与 fatal response；
-- **Host tools**：Python CLI、protocol layer、worker 与 Tkinter GUI。
-
-feature branches 还保留 clock gating、trace buffer 与 portability handoff 等实验。
-
-### 实机与实现结果
-
-| 指标 | 结果 |
-| --- | ---: |
-| Implementation WNS | **6.392 ns** |
-| Implementation WHS | **0.035 ns** |
-| Slice LUTs | **3794（11.64%）** |
-| Slice Registers | **5449（8.36%）** |
-| Block RAM Tile | **4.5（6.00%）** |
-| DSP | **0** |
-
-板级验证包括：
-
-- stats / PMU query；
-- AES / SM4 known vector；
-- ACL block / recovery；
-- multi-block file traffic。
-
-已有 UART end-to-end 文件流量记录：
-
-| Workload | 时间 | 有效吞吐 |
-| --- | ---: | ---: |
-| 32 KB SM4 | 0.336 s | 0.780 Mbps |
-| 32 KB AES | 0.336 s | 0.780 Mbps |
-| 512 KB SM4 | 5.331 s | 0.787 Mbps |
-| 512 KB AES | 5.331 s | 0.787 Mbps |
-
-这些数字描述的是当前 UART-bound end-to-end datapath，而不是 cipher core 的峰值吞吐。
-
-## 2. Zynq / AXI Datapath
-
-原 `fpga-heterogeneous-datapath` 中与 RX50T 主线互补的部分已经整理到：
-
-[`zynq-datapath/`](zynq-datapath/README.md)
-
-主要保留：
-
-- **AXI-Lite CSR**：software / PS control interface；
-- **AXI4 DMA**：Burst write、4 KB boundary split 与 backpressure；
-- **Descriptor fetcher**：descriptor ring 基础执行路径；
-- **CDC**：async FIFO 与 Gray-code pointer synchronization；
-- **Buffer management**：PBM reserve / commit / rollback；
-- **Width conversion**：128-bit → 32-bit Gearbox；
-- **Interface definitions**：AXI-Lite / AXI-Stream interface 与 package；
-- **Verification**：DMA 4 KB boundary testbench。
-
-该目录不再重复迁移 AES / SM4 算法核心、UART parser 和 TX stack。
-
-## 3. 仓库结构
-
-```text
-.
-├── contest_project/          # RX50T 主线 RTL / TB / tools / build scripts
-├── zynq-datapath/            # AXI / CDC / DMA / PBM / descriptor ring
-├── docs/                     # RX50T architecture / baseline / board tests
-├── daily-progress/           # RX50T 开发记录
-├── reference/                # 参考 RTL
-├── THIRD_PARTY_NOTICES.md
-└── README.md
-```
-
-### RX50T
+主要目录：
 
 ```text
 contest_project/
-├── rtl/contest/
-├── tb/contest/
-├── tools/
-├── scripts/
-└── constraints/
+├── rtl/contest/       # RTL
+├── tb/contest/        # SystemVerilog testbench
+├── tools/             # Python CLI / GUI / protocol tools
+├── scripts/           # Vivado build / simulation scripts
+└── constraints/       # RX50T constraints
 ```
 
-### Zynq datapath
+### Zynq / AXI 数据通路
+
+`zynq-datapath/` 保存与 SoC 数据搬运相关的独立模块：
 
 ```text
 zynq-datapath/
 ├── rtl/
-│   ├── control/
-│   ├── cdc/
-│   ├── buffer/
-│   ├── datapath/
-│   ├── dma/
-│   └── interfaces/
+│   ├── control/       # AXI-Lite CSR
+│   ├── cdc/           # async FIFO
+│   ├── buffer/        # PBM / FIFO
+│   ├── datapath/      # Gearbox
+│   ├── dma/           # DMA engine / descriptor fetcher
+│   └── interfaces/    # AXI-Lite / AXI-Stream definitions
 ├── tb/
 └── docs/
 ```
 
-## 4. 文档入口
+这部分保留 AXI、CDC、DMA、buffer management 与 descriptor-driven execution 等代码，不重复保存 RX50T 主线已经覆盖的 AES / SM4、parser 和 TX 实现。
 
-### RX50T
+## RX50T RTL
+
+当前主线核心模块位于：
+
+`contest_project/rtl/contest/`
+
+其中包括：
+
+- UART RX / TX；
+- protocol parser；
+- ACL；
+- AXI-Stream packer / unpacker；
+- AES / SM4 block engine integration；
+- FIFO / skid buffer；
+- CDC bridge；
+- watchdog；
+- PMU / trace buffer；
+- board-level top。
+
+当前 board top：
+
+`rx50t_uart_crypto_probe_board_top.sv`
+
+默认配置：
+
+- FPGA：Xilinx Artix-7 XC7A50T；
+- clock：50 MHz；
+- UART：2,000,000 baud。
+
+## Testbench 与验证
+
+`contest_project/tb/contest/` 保存主线 testbench，覆盖：
+
+- UART；
+- parser；
+- ACL；
+- AXI-Stream crypto path；
+- watchdog；
+- clock gating；
+- PMU / benchmark；
+- trace buffer；
+- CDC ingress / egress。
+
+Zynq 数据通路还保留：
+
+`zynq-datapath/tb/tb_dma_boundary.sv`
+
+用于检查 AXI4 DMA 跨 4 KB boundary 时的 Burst split。
+
+## Host Tools
+
+`contest_project/tools/` 包含：
+
+- UART probe CLI；
+- protocol handling；
+- board worker；
+- Tkinter GUI；
+- stats / PMU / trace readback 工具。
+
+这些工具用于驱动真实开发板并核对 FPGA 返回结果。
+
+## 构建脚本
+
+`contest_project/scripts/` 保存 Vivado build 与 simulation scripts。
+
+常用入口包括 RX50T Crypto Probe 的 RTL simulation、bitstream build 与各模块 testbench。
+
+## 文档
+
+代码相关说明位于：
 
 - [当前 baseline](docs/RX50T_CURRENT_BASELINE.md)
 - [架构说明](docs/RX50T_ARCHITECTURE_OVERVIEW.md)
-- [代码实现分析](docs/CODE_ANALYSIS_REPORT.md)
-- [开发记录](daily-progress/README.md)
+- [源码分析](docs/CODE_ANALYSIS_REPORT.md)
+- [Zynq Datapath](zynq-datapath/README.md)
+- [迁移审计](zynq-datapath/docs/migration-audit.md)
 
-### Zynq / data movement
+## 第三方代码
 
-- [Zynq Datapath 概览](zynq-datapath/README.md)
-- [开发内容摘要](zynq-datapath/docs/development-overview.md)
+AES / SM4 算法核心包含公开参考实现，并保留原始源码中的版权与许可信息。
 
-## 5. 第三方代码
+第三方模块说明见：
 
-AES / SM4 部分使用公开参考实现，原始版权与许可信息保留在源码中。主要工程工作集中在 RTL integration、stream / memory datapath、protocol processing、runtime observability、fault handling、host tooling 与板级验证。
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 
-详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+## 对应项目展示
+
+完整的 PC–ESP32–FPGA–STM32 安全控制系统、系统架构、个人工作和验证结果见：
+
+**LIZH-DEVE/fpga-secure-control-system**
