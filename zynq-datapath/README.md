@@ -57,4 +57,6 @@ AXI / CDC
 
 ## 说明
 
-该目录是从原独立仓库中抽取的可复用部分。原仓库中的 crypto / parser / TX 等重复模块没有再次迁入，避免与 RX50T 主线形成重复展示。
+该目录是从原独立仓库中抽取的可复用部分，不是原 Vivado 工程的逐文件复制。原仓库中的 crypto / parser / TX 等重复模块没有再次迁入，旧 top-level、过期 testbench 和与现行 CSR map 不一致的软件示例也没有进入 active tree。
+
+完整迁移取舍见 [迁移审计](docs/migration-audit.md)。
