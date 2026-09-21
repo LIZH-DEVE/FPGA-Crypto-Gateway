@@ -52,7 +52,7 @@ class CryptoGatewayGuiLayoutTests(unittest.TestCase):
             with mock.patch.object(app, "_refresh_runtime_views") as refresh:
                 app._handle_event(gui.WorkerEvent(kind="connected", payload={"port": "COM7", "baud": 2_000_000}))
                 refresh.assert_called_once_with()
-                self.assertEqual(app.connection_state.get(), "Connected: COM12")
+                self.assertEqual(app.connection_state.get(), "Connected: COM7")
         finally:
             app.destroy()
 
