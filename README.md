@@ -1,88 +1,62 @@
-# RX50T Crypto Gateway
+# FPGA 开发：RX50T 实机系统与 Zynq 数据通路
 
-基于 **RX50T / Artix-7** 的 pure-PL 安全数据通路项目，主要用于 FPGA RTL、流式数据处理、runtime observability 与板级验证实践。
+本仓库集中整理两类互补的 **FPGA / RTL 开发实践**：
 
-当前主线不使用 ARM/PS、DMA 或 DDR，而是在资源受限的 FPGA 上保留完整的硬件闭环：
+1. **RX50T pure-PL 实机系统**：面向真实 Artix-7 开发板，完成 UART、protocol parser、ACL、AES / SM4、PMU / trace、watchdog、host tools 与板级验证；
+2. **Zynq heterogeneous datapath**：面向 SoC data movement，保留 AXI-Lite、AXI4、CDC、FIFO、Gearbox、PBM、DMA 与 descriptor ring 等模块。
+
+两部分分别覆盖“**真实 FPGA 板级实现**”与“**PS/PL 数据搬运与异构互联**”，避免将同类 crypto / parser 代码重复维护。
+
+## 1. RX50T pure-PL 主线
+
+当前主要开发线基于 **RX50T / Xilinx Artix-7 XC7A50T**。
+
+数据通路：
 
 ```text
 UART RX
   → Parser
   → Protocol Dispatcher
-  → AXIS ACL
-  → 8→128 Packer
-  → AES / SM4 Block Engine
-  → 128→8 Unpacker
+  → contest_crypto_axis_core
+      ├── AXIS ACL
+      ├── 8→128 Packer
+      ├── AES / SM4 Block Engine
+      └── 128→8 Unpacker
   → UART TX
 ```
 
-## 技术内容
+### 技术内容
 
-- **UART datapath**：2M baud 板级通信、RX/TX buffering；
-- **Protocol parser**：自定义帧解析、长度检查与错误处理；
+- **UART datapath**：2M baud 板级通信与 buffering；
+- **Protocol parser**：帧解析、长度检查与 error handling；
 - **ACL**：8-slot runtime rule table、hit counter 与 block path；
-- **AXI-Stream pipeline**：backpressure-aware ACL、packer、crypto block engine 与 unpacker；
-- **AES / SM4**：128-bit block encryption，支持 16B / 32B / 64B / 128B 数据路径；
-- **Observability**：统计计数、PMU snapshot、on-chip benchmark；
+- **AXI-Stream pipeline**：backpressure-aware ACL / packer / block engine / unpacker；
+- **AES / SM4 integration**：128-bit block path，覆盖 16B / 32B / 64B / 128B；
+- **Observability**：statistics、PMU、on-chip benchmark；
 - **Fault handling**：watchdog 与 fatal response；
 - **Host tools**：Python CLI、protocol layer、worker 与 Tkinter GUI。
 
-仓库中的 feature branches 还保留了 clock gating、trace buffer 和 portability handoff 等进一步实验。
+feature branches 还保留 clock gating、trace buffer 与 portability handoff 等实验。
 
-## 硬件基线
+### 实机与实现结果
 
-| 项目 | 配置 |
-| --- | --- |
-| Board | RX50T |
-| FPGA | Xilinx Artix-7 XC7A50T |
-| Clock | 50 MHz |
-| UART | 当前主线支持 2,000,000 baud |
-| UART RX / TX | K1 / J1 |
-| Reset | J20 |
+| 指标 | 结果 |
+| --- | ---: |
+| Implementation WNS | **6.392 ns** |
+| Implementation WHS | **0.035 ns** |
+| Slice LUTs | **3794（11.64%）** |
+| Slice Registers | **5449（8.36%）** |
+| Block RAM Tile | **4.5（6.00%）** |
+| DSP | **0** |
 
-不同开发阶段曾使用不同 UART 配置；具体 board baseline 与测试条件以对应开发记录为准。
+板级验证包括：
 
-## 当前主线
-
-当前主线以 `contest_crypto_axis_core` 为核心：
-
-```text
-Parser
-  → Protocol Dispatcher
-  → contest_crypto_axis_core
-      ├── contest_acl_axis_core
-      ├── contest_axis_block_packer
-      ├── contest_crypto_block_engine
-      └── contest_axis_block_unpacker
-  → UART TX
-```
-
-旧版 `contest_acl_core` 与 `contest_crypto_bridge` 仍保留，用于独立 Probe 与对应 unit test，不属于当前 Crypto Probe 的默认主线。
-
-## 代表性验证结果
-
-AXIS v1.1 主线完成过完整的 simulation、implementation 与 real-board 验证。
-
-### Implementation
-
-- Implementation WNS：**6.392 ns**
-- Implementation WHS：**0.035 ns**
-- Slice LUTs：**3794（11.64%）**
-- Slice Registers：**5449（8.36%）**
-- Block RAM Tile：**4.5（6.00%）**
-- DSP：**0**
-
-### 板级验证
-
-已记录的主线 smoke test 包括：
-
-- stats query；
-- PMU clear / query；
-- AES known vector；
-- SM4 known vector；
+- stats / PMU query；
+- AES / SM4 known vector；
 - ACL block / recovery；
 - multi-block file traffic。
 
-已有板级文件传输记录：
+已有 UART end-to-end 文件流量记录：
 
 | Workload | 时间 | 有效吞吐 |
 | --- | ---: | ---: |
@@ -91,42 +65,82 @@ AXIS v1.1 主线完成过完整的 simulation、implementation 与 real-board �
 | 512 KB SM4 | 5.331 s | 0.787 Mbps |
 | 512 KB AES | 5.331 s | 0.787 Mbps |
 
-这些结果用于描述当前 UART-bound end-to-end datapath，而不是算法核的峰值吞吐。
+这些数字描述的是当前 UART-bound end-to-end datapath，而不是 cipher core 的峰值吞吐。
 
-## 代码结构
+## 2. Zynq / AXI Datapath
+
+原 `fpga-heterogeneous-datapath` 中与 RX50T 主线互补的部分已经整理到：
+
+[`zynq-datapath/`](zynq-datapath/README.md)
+
+主要保留：
+
+- **AXI-Lite CSR**：software / PS control interface；
+- **AXI4 DMA**：Burst write、4 KB boundary split 与 backpressure；
+- **Descriptor fetcher**：descriptor ring 基础执行路径；
+- **CDC**：async FIFO 与 Gray-code pointer synchronization；
+- **Buffer management**：PBM reserve / commit / rollback；
+- **Width conversion**：128-bit → 32-bit Gearbox；
+- **Interface definitions**：AXI-Lite / AXI-Stream interface 与 package；
+- **Verification**：DMA 4 KB boundary testbench。
+
+该目录不再重复迁移 AES / SM4 算法核心、UART parser 和 TX stack。
+
+## 3. 仓库结构
+
+```text
+.
+├── contest_project/          # RX50T 主线 RTL / TB / tools / build scripts
+├── zynq-datapath/            # AXI / CDC / DMA / PBM / descriptor ring
+├── docs/                     # RX50T architecture / baseline / board tests
+├── daily-progress/           # RX50T 开发记录
+├── reference/                # 参考 RTL
+├── THIRD_PARTY_NOTICES.md
+└── README.md
+```
+
+### RX50T
 
 ```text
 contest_project/
-├── rtl/contest/       # 主线 RTL
-├── tb/contest/        # SystemVerilog testbench
-├── tools/             # CLI / protocol / worker / GUI
-├── scripts/           # Vivado build / simulation scripts
-└── constraints/       # RX50T constraints
-
-docs/                  # 架构、baseline、board test 与 runbook
-daily-progress/        # 开发过程记录
-reference/             # 参考模块与基础 RTL
+├── rtl/contest/
+├── tb/contest/
+├── tools/
+├── scripts/
+└── constraints/
 ```
 
-## 常用入口
+### Zynq datapath
 
-- [代码实现分析](docs/CODE_ANALYSIS_REPORT.md)
+```text
+zynq-datapath/
+├── rtl/
+│   ├── control/
+│   ├── cdc/
+│   ├── buffer/
+│   ├── datapath/
+│   ├── dma/
+│   └── interfaces/
+├── tb/
+└── docs/
+```
+
+## 4. 文档入口
+
+### RX50T
+
 - [当前 baseline](docs/RX50T_CURRENT_BASELINE.md)
 - [架构说明](docs/RX50T_ARCHITECTURE_OVERVIEW.md)
+- [代码实现分析](docs/CODE_ANALYSIS_REPORT.md)
 - [开发记录](daily-progress/README.md)
 
-## 设计边界
+### Zynq / data movement
 
-当前主线聚焦 pure-PL datapath，以下内容不作为该仓库的目标：
+- [Zynq Datapath 概览](zynq-datapath/README.md)
+- [开发内容摘要](zynq-datapath/docs/development-overview.md)
 
-- ARM/PS；
-- DMA / DDR / PBM；
-- full Ethernet/IP/UDP stack；
-- persistent ACL storage；
-- PUF / hardware key derivation。
+## 5. 第三方代码
 
-## 第三方代码
-
-AES / SM4 部分使用公开参考实现，原始版权与许可信息保留在源码中。项目工作主要集中在协议解析、ACL、AXIS datapath、接口适配、observability、fault handling、host tooling 与板级验证。
+AES / SM4 部分使用公开参考实现，原始版权与许可信息保留在源码中。主要工程工作集中在 RTL integration、stream / memory datapath、protocol processing、runtime observability、fault handling、host tooling 与板级验证。
 
 详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
