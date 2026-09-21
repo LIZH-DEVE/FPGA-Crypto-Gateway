@@ -1,107 +1,116 @@
-# RX50T 架构说明
+# RX50T Architecture Overview
 
-## 1. 主线结构
-
-当前 RX50T 主线是一个 pure-PL stream datapath：
+## 主线数据通路
 
 ```text
 UART RX
   │
   v
-Parser
-  │
-  v
-Protocol Dispatcher
+Parser / Protocol Dispatcher
   │
   v
 contest_crypto_axis_core
-  ├── ACL AXIS
-  ├── 8→128 Packer
+  ├── AXI-Stream ACL
+  ├── 8-to-128 Packer
   ├── AES / SM4 Block Engine
-  └── 128→8 Unpacker
+  └── 128-to-8 Unpacker
   │
   v
 UART TX
 ```
 
-控制与 observability 逻辑并行提供 stats、ACL 配置、PMU 与 benchmark query。
+控制与观测逻辑并行提供 ACL 配置、stats、PMU、trace 和 on-chip benchmark。
 
-## 2. UART
+## UART
 
-### RX
+`contest_uart_rx.sv` 与 `contest_uart_tx.sv` 负责串行输入输出。
 
-负责将异步 UART serial input 转换为内部 byte stream，并进行 start / data / stop bit 处理。
-
-### TX
-
-负责将处理后的 byte stream 发送回 host，并通过 ready / valid 机制接受上游数据。
-
-当前 Crypto Probe board top 默认使用 50 MHz clock 与 2,000,000 baud。
-
-## 3. Parser
-
-`contest_parser_core` 解析：
+当前主线 board top：
 
 ```text
-SOF(0x55) + LEN + PAYLOAD
+50 MHz root clock
+2,000,000 baud
 ```
 
-并输出 payload stream、frame boundary 与 error information。
+UART RX / TX 与主数据通路之间通过 FIFO / skid buffer 处理 backpressure。
 
-## 4. Protocol Dispatcher
+## Parser / Control Dispatcher
 
-Protocol Dispatcher 负责区分：
+`contest_parser_core.sv` 解析 frame boundary、length 与 payload。
 
-- data path request；
-- stats / PMU / ACL query；
-- ACL update；
-- benchmark / control command。
+控制命令和数据请求共享 UART transport，但在内部进入不同路径：
 
-这样数据处理与控制命令可以共享 UART transport，但在内部进入不同处理路径。
+- crypto data；
+- stats / PMU query；
+- ACL query / update；
+- trace query；
+- benchmark control。
 
-## 5. AXIS ACL
+## AXI-Stream ACL
 
-`contest_acl_axis_core` 位于主数据通路前段：
+`contest_acl_axis_core.sv` 位于 crypto path 前段。
 
-- 使用 AXI-Stream style valid / ready；
-- 维护 8 个 runtime rule slot；
-- 对数据流执行 pass / block；
-- 记录 hit counter；
-- 向上层输出 ACL block event。
+主要功能：
 
-## 6. Packer / Crypto / Unpacker
+- AXI-Stream valid / ready；
+- 8 个 runtime rule slots；
+- pass / block；
+- per-rule hit counters；
+- runtime rule update。
+
+## Block Crypto Path
 
 ### Packer
 
-将 8-bit byte stream 聚合为 128-bit block，并保留 last / valid-byte metadata。
+`contest_axis_block_packer.sv` 将 8-bit byte stream 聚合为 128-bit block，并维护 block boundary / valid-byte metadata。
 
-### Crypto Block Engine
+### Crypto Engine
 
-支持 AES-128 与 SM4-128。内部使用 buffer 将 UART 速率与 block cipher execution 解耦。
+`contest_crypto_block_engine.sv` 支持 AES-128 与 SM4-128。
+
+当前 board baseline 使用固定标准测试向量 key，用于验证算法接口与数据通路；runtime key provisioning 未包含在该版本中。
 
 ### Unpacker
 
-将 128-bit result 按有效字节数重新展开为 8-bit stream。
+`contest_axis_block_unpacker.sv` 将 128-bit result 重新展开为 byte stream。
 
-## 7. Observability
+## CDC / Buffering
 
-主线提供多层 observability：
+当前主线包含：
 
-- frame / error counters；
-- ACL hit counters；
-- PMU counters；
+- `contest_async_axis_fifo.sv`
+- `contest_async_mailbox.sv`
+- `contest_async_pulse.sv`
+- `contest_byte_skid_buffer.sv`
+- `contest_crypto_cdc_ingress_bridge.sv`
+- `contest_uart_cdc_egress_bridge.sv`
+- `contest_uart_cdc_ingress_frontend.sv`
+
+用于连接 ingress、crypto/control 与 UART egress 的不同执行阶段。
+
+## Observability
+
+`contest_uart_crypto_probe.sv` 集成：
+
+- frame / crypto / ACL counters；
+- PMU；
+- watchdog；
+- trace buffer；
 - on-chip benchmark；
-- host-side query / GUI。
+- control response path。
 
-feature branches 进一步扩展了 clock gating 与 trace buffer。
+host 端通过 CLI / worker / GUI 查询这些状态。
 
-## 8. 为什么采用 pure-PL
+## Pure-PL 设计
 
-该架构刻意不引入 ARM/PS、DMA/DDR 和完整网络协议栈，目的是：
+当前 RX50T 工程不依赖 ARM/PS、DMA 或 DDR。
 
-- 缩短 board-level datapath；
-- 将 FPGA resource 与 timing 约束集中在关键 RTL；
-- 简化 real-board reproduction；
-- 保留足够的 observability 用于定位 bottleneck。
+这样可以把板级验证集中在：
 
-因此 RX50T 仓库更适合作为 FPGA datapath / runtime observability 项目，而不是完整 heterogeneous SoC。
+- RTL data path；
+- handshake / backpressure；
+- CDC；
+- resource / timing；
+- protocol-level observability。
+
+更完整的模块索引见 [Implementation Guide](IMPLEMENTATION_GUIDE.md)。
