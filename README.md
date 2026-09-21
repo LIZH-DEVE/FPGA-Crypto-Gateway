@@ -1,8 +1,8 @@
-# FPGA Crypto Gateway
+# FPGA 加密网关：RX50T 板级完整实现
 
-这是 FPGA 加密网关的公开源码仓库，保存 **RTL、testbench、Vivado 构建脚本、板级调试工具和相关技术文档**。
+基于 **Xilinx Artix-7 XC7A50T / RX50T 开发板** 的 pure-PL 加密网关工程。
 
-当前代码以 RX50T / Artix-7 上的 pure-PL 实现为主，重点是协议处理、ACL、AES / SM4 数据通路、AXI-Stream 流控、运行状态观测与板级验证。
+项目从 UART 输入开始，在 FPGA 内完成协议解析、ACL 过滤、AES / SM4 数据处理、运行状态统计与异常恢复，并通过 UART 返回结果。仓库包含 RTL、SystemVerilog testbench、Vivado 构建脚本和上位机调试工具。
 
 ## 数据通路
 
@@ -11,69 +11,84 @@ UART RX
   → Parser
   → Protocol Dispatcher
   → AXI-Stream ACL
-  → Block Packer
+  → 8→128 Block Packer
   → AES / SM4 Block Engine
-  → Block Unpacker
+  → 128→8 Block Unpacker
   → UART TX
 ```
 
-## 目录结构
+## 主要功能
+
+- **UART**：2,000,000 baud 板级通信；
+- **Protocol Parser**：帧解析、长度检查与错误处理；
+- **ACL**：8-slot runtime rule table、hit counter 与 block path；
+- **AXI-Stream**：valid / ready backpressure 与 block stream pipeline；
+- **AES / SM4**：128-bit block encryption，覆盖 16B / 32B / 64B / 128B 数据路径；
+- **Watchdog**：stream / crypto timeout recovery；
+- **PMU**：运行周期、stall、ACL block 与数据流统计；
+- **Trace Buffer**：板上事件记录与 UART readback；
+- **Host Tools**：Python CLI、协议工具与 Tkinter GUI。
+
+## 代码结构
 
 ```text
 contest_project/
-├── rtl/contest/       # 主要 RTL
+├── rtl/contest/       # FPGA RTL
 ├── tb/contest/        # SystemVerilog testbench
-├── tools/             # Python CLI / GUI / protocol tools
-├── scripts/           # Vivado build / simulation scripts
-└── constraints/       # RX50T pin / timing constraints
+├── constraints/       # RX50T constraints
+├── scripts/           # Vivado build / simulation
+└── tools/             # CLI / GUI / protocol tools
 
 docs/                  # 架构、baseline 与板级测试记录
 daily-progress/        # 开发过程记录
 reference/             # 参考 RTL
 ```
 
-## 主要 RTL
+## RTL
 
 核心代码位于 `contest_project/rtl/contest/`，包括：
 
-- UART RX / TX；
-- protocol parser；
-- ACL rule path；
-- AXI-Stream packer / unpacker；
-- AES / SM4 block engine integration；
-- FIFO / skid buffer；
-- CDC ingress / egress；
+- `contest_uart_rx.sv` / `contest_uart_tx.sv`
+- `contest_parser_core.sv`
+- `contest_acl_axis_core.sv`
+- `contest_axis_block_packer.sv`
+- `contest_crypto_block_engine.sv`
+- `contest_axis_block_unpacker.sv`
+- `contest_trace_buffer.sv`
+- CDC / FIFO / skid buffer
+- RX50T board-level top
+
+当前板级顶层：
+
+`rx50t_uart_crypto_probe_board_top.sv`
+
+## 验证
+
+主线完成 simulation、implementation 与 real-board 验证。
+
+代表性 implementation 结果：
+
+| 指标 | 结果 |
+| --- | ---: |
+| WNS | **6.392 ns** |
+| WHS | **0.035 ns** |
+| Slice LUTs | **3794（11.64%）** |
+| Slice Registers | **5449（8.36%）** |
+| Block RAM Tile | **4.5（6.00%）** |
+| DSP | **0** |
+
+板级验证覆盖：
+
+- AES / SM4 known vector；
+- ACL block / recovery；
+- stats / PMU query；
 - watchdog；
-- PMU / trace buffer；
-- board-level top。
+- multi-block file traffic；
+- trace readback。
 
-当前 board top：
+## 上位机工具
 
-`contest_project/rtl/contest/rx50t_uart_crypto_probe_board_top.sv`
-
-默认板级配置：
-
-- FPGA：Xilinx Artix-7 XC7A50T；
-- clock：50 MHz；
-- UART：2,000,000 baud。
-
-## Testbench
-
-`contest_project/tb/contest/` 保存 RTL 验证代码，覆盖：
-
-- UART；
-- parser；
-- ACL；
-- AXI-Stream crypto path；
-- CDC；
-- watchdog；
-- clock gating；
-- PMU / benchmark；
-- trace buffer。
-
-## Host Tools
-
-`contest_project/tools/` 保存上位机调试工具，包括：
+`contest_project/tools/` 包含：
 
 - UART probe CLI；
 - protocol handling；
@@ -81,18 +96,7 @@ reference/             # 参考 RTL
 - Tkinter GUI；
 - stats / PMU / trace readback。
 
-这些工具用于驱动开发板并核对 FPGA 返回结果。
-
-## 构建与仿真
-
-`contest_project/scripts/` 保存 Vivado build 与 simulation scripts，可用于：
-
-- module-level simulation；
-- RX50T top-level build；
-- bitstream generation；
-- board-oriented regression。
-
-## 技术文档
+## 文档
 
 - [当前 baseline](docs/RX50T_CURRENT_BASELINE.md)
 - [架构说明](docs/RX50T_ARCHITECTURE_OVERVIEW.md)
@@ -101,12 +105,6 @@ reference/             # 参考 RTL
 
 ## 第三方代码
 
-AES / SM4 算法核心包含公开参考实现，并保留原始源码中的版权和许可信息。
+AES / SM4 算法核心采用公开参考实现，并保留原始版权与许可信息。
 
 详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-
-## 项目展示
-
-PC–ESP32–FPGA–STM32 安全控制系统的整体架构、比赛背景、个人工作与验证结果见：
-
-**LIZH-DEVE/fpga-secure-control-system**
